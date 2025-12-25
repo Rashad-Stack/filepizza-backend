@@ -198,3 +198,4 @@ bun run test:cov
 ## License
 
 MIT
+SSH connection configured successfully!
