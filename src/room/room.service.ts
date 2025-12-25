@@ -7,8 +7,8 @@ export class RoomService {
 
   async createRoom() {
     const expiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000); // 24 hours
-    
-    return this.prisma.room.create({
+
+    return await this.prisma.room.create({
       data: {
         expiresAt,
       },
@@ -16,7 +16,7 @@ export class RoomService {
   }
 
   async findRoom(id: string) {
-    return this.prisma.room.findFirst({
+    return await this.prisma.room.findFirst({
       where: {
         id,
         isActive: true,
@@ -28,7 +28,7 @@ export class RoomService {
   }
 
   async deactivateRoom(id: string) {
-    return this.prisma.room.update({
+    return await this.prisma.room.update({
       where: { id },
       data: { isActive: false },
     });

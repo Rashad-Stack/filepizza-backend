@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FilePizza - {{title}}</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 40px; }
+        .container { max-width: 800px; margin: 0 auto; }
+        .section { border: 1px solid #ddd; padding: 20px; margin: 20px 0; border-radius: 8px; }
+        .sender { border-color: #007bff; }
+        .receiver { border-color: #28a745; }
+        button { padding: 10px 20px; margin: 10px 0; cursor: pointer; }
+        input[type="file"], input[type="text"] { margin: 10px 0; padding: 8px; width: 300px; }
+        .status { margin: 10px 0; padding: 10px; background: #f8f9fa; border-radius: 4px; }
+        .download-link { display: inline-block; padding: 10px; background: #28a745; color: white; text-decoration: none; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>FilePizza - Peer-to-Peer File Transfer</h1>
+        
+        <div class="section sender">
+            <h2>📤 Send File</h2>
+            <input type="file" id="fileInput">
+            <br>
+            <button onclick="createRoom()">Create Room & Send File</button>
+            <div id="senderStatus" class="status"></div>
+        </div>
+
+        <div class="section receiver">
+            <h2>📥 Receive File</h2>
+            <input type="text" id="roomIdInput" placeholder="Enter Room ID" value="{{roomId}}">
+            <br>
+            <button onclick="joinRoom()">Join Room</button>
+            <div id="receiverStatus" class="status"></div>
+            <div id="downloadArea"></div>
+        </div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
+    <script>
+        let socket = io();
+        let peerConnection;
+        let dataChannel;
+        let roomId = '{{roomId}}';
+        let receiverId;
+        let senderId;
+
+        async function createRoom() {
+            const response = await fetch('/rooms', { method: 'POST' });
+            const data = await response.json();
+            roomId = data.roomId;
+            
+            document.getElementById('senderStatus').innerHTML = `Room created: ${roomId}<br>Share this link: <a href="/transfer/${roomId}" target="_blank">/transfer/${roomId}</a>`;
+            
+            setupPeerConnection();
+            socket.emit('join-room', { roomId, role: 'sender' });
+        }
+
+        function joinRoom() {
+            roomId = document.getElementById('roomIdInput').value || roomId;
+            document.getElementById('receiverStatus').innerHTML = `Joining room: ${roomId}`;
+            setupPeerConnection();
+            socket.emit('join-room', { roomId, role: 'receiver' });
+        }
+
+        function setupPeerConnection() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    const targetId = receiverId || senderId;
+                    if (targetId) {
+                        socket.emit('ice-candidate', { candidate: event.candidate, targetId });
+                    }
+                }
+            };
+
+            peerConnection.ondatachannel = (event) => {
+                dataChannel = event.channel;
+                setupDataChannel();
+            };
+        }
+
+        let receivedChunks = [];
+        let expectedChunks = 0;
+        let fileName = '';
+
+        function setupDataChannel() {
+            dataChannel.onopen = () => {
+                console.log('Data channel opened');
+                document.getElementById('receiverStatus').innerHTML += '<br>✅ Connected! Ready to receive file.';
+                
+                const fileInput = document.getElementById('fileInput');
+                if (fileInput.files.length > 0) {
+                    sendFile();
+                }
+            };
+
+            dataChannel.onmessage = (event) => {
+                const message = JSON.parse(event.data);
+                
+                if (message.type === 'file-info') {
+                    // File metadata
+                    fileName = message.name;
+                    expectedChunks = message.chunks;
+                    receivedChunks = [];
+                    document.getElementById('receiverStatus').innerHTML += `<br>📥 Receiving: ${fileName}`;
+                } else if (message.type === 'chunk') {
+                    // File chunk
+                    receivedChunks[message.index] = message.data;
+                    
+                    const progress = ((receivedChunks.filter(c => c).length / expectedChunks) * 100).toFixed(1);
+                    document.getElementById('receiverStatus').innerHTML = 
+                        document.getElementById('receiverStatus').innerHTML.split('<br>📥 Receiving:')[0] + 
+                        `<br>📥 Receiving: ${fileName} (${progress}%)`;
+                    
+                    // Check if all chunks received
+                    if (receivedChunks.filter(c => c).length === expectedChunks) {
+                        const completeFile = receivedChunks.join('');
+                        const blob = dataURLtoBlob(completeFile);
+                        const url = URL.createObjectURL(blob);
+                        
+                        document.getElementById('downloadArea').innerHTML = 
+                            `<br><a href="${url}" download="${fileName}" class="download-link">📥 Download ${fileName}</a>`;
+                        
+                        document.getElementById('receiverStatus').innerHTML += '<br>✅ File received successfully!';
+                    }
+                }
+            };
+        }
+
+        function sendFile() {
+            const file = document.getElementById('fileInput').files[0];
+            const reader = new FileReader();
+            
+            reader.onload = () => {
+                const dataURL = reader.result;
+                const chunkSize = 16384; // 16KB chunks
+                const chunks = [];
+                
+                // Split file into chunks
+                for (let i = 0; i < dataURL.length; i += chunkSize) {
+                    chunks.push(dataURL.slice(i, i + chunkSize));
+                }
+                
+                // Send file info first
+                dataChannel.send(JSON.stringify({
+                    type: 'file-info',
+                    name: file.name,
+                    size: file.size,
+                    chunks: chunks.length
+                }));
+                
+                // Send chunks
+                chunks.forEach((chunk, index) => {
+                    setTimeout(() => {
+                        dataChannel.send(JSON.stringify({
+                            type: 'chunk',
+                            index: index,
+                            data: chunk
+                        }));
+                        
+                        const progress = ((index + 1) / chunks.length * 100).toFixed(1);
+                        document.getElementById('senderStatus').innerHTML = 
+                            document.getElementById('senderStatus').innerHTML.split('<br>📤 Sending:')[0] + 
+                            `<br>📤 Sending: ${file.name} (${progress}%)`;
+                        
+                        if (index === chunks.length - 1) {
+                            document.getElementById('senderStatus').innerHTML += '<br>✅ File sent successfully!';
+                        }
+                    }, index * 10); // Small delay between chunks
+                });
+            };
+            
+            reader.readAsDataURL(file);
+        }
+
+        function dataURLtoBlob(dataURL) {
+            const arr = dataURL.split(',');
+            const mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]);
+            let n = bstr.length;
+            const u8arr = new Uint8Array(n);
+            while (n--) {
+                u8arr[n] = bstr.charCodeAt(n);
+            }
+            return new Blob([u8arr], { type: mime });
+        }
+
+        // WebSocket event handlers
+        socket.on('room-joined', (data) => {
+            console.log('Joined room as:', data.role);
+            if (data.role === 'receiver') {
+                document.getElementById('receiverStatus').innerHTML += '<br>✅ Joined room successfully!';
+            }
+        });
+
+        socket.on('receiver-joined', async ({ receiverId: id }) => {
+            receiverId = id;
+            console.log('Receiver joined:', receiverId);
+            
+            dataChannel = peerConnection.createDataChannel('fileTransfer');
+            setupDataChannel();
+            
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('offer', { offer, targetId: receiverId });
+        });
+
+        socket.on('offer', async ({ offer, senderId: id }) => {
+            senderId = id;
+            console.log('Received offer from:', senderId);
+            await peerConnection.setRemoteDescription(offer);
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit('answer', { answer, targetId: senderId });
+        });
+
+        socket.on('answer', async ({ answer }) => {
+            console.log('Received answer');
+            await peerConnection.setRemoteDescription(answer);
+        });
+
+        socket.on('ice-candidate', async ({ candidate }) => {
+            console.log('Received ICE candidate');
+            await peerConnection.addIceCandidate(candidate);
+        });
+
+        socket.on('error', (error) => {
+            console.error('Socket error:', error);
+            document.getElementById('receiverStatus').innerHTML = `❌ Error: ${error}`;
+        });
+
+        // Auto-join if roomId is provided
+        if (roomId && roomId !== '') {
+            document.getElementById('receiverStatus').innerHTML = 'Auto-joining room...';
+            setTimeout(joinRoom, 1000);
+        }
+    </script>
+</body>
+</html>

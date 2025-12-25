@@ -1,0 +1,170 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>FilePizza Test Client</title>
+</head>
+<body>
+    <h1>FilePizza File Transfer</h1>
+    
+    <div id="sender" style="border: 1px solid blue; padding: 20px; margin: 10px;">
+        <h2>Sender</h2>
+        <input type="file" id="fileInput">
+        <button onclick="createRoom()">Create Room & Send File</button>
+        <div id="senderStatus"></div>
+    </div>
+
+    <div id="receiver" style="border: 1px solid green; padding: 20px; margin: 10px;">
+        <h2>Receiver</h2>
+        <input type="text" id="roomIdInput" placeholder="Enter Room ID">
+        <button onclick="joinRoom()">Join Room</button>
+        <div id="receiverStatus"></div>
+        <div id="downloadArea"></div>
+    </div>
+
+    <script src="https://cdn.socket.io/4.8.3/socket.io.min.js"></script>
+    <script>
+        let socket = io('http://localhost:3000');
+        let peerConnection;
+        let dataChannel;
+        let roomId;
+        let receiverId;
+        let senderId;
+
+        // Sender functions
+        async function createRoom() {
+            const response = await fetch('http://localhost:3000/rooms', { method: 'POST' });
+            const data = await response.json();
+            roomId = data.roomId;
+            
+            document.getElementById('senderStatus').innerHTML = `Room created: ${roomId}<br>Share this ID with receiver`;
+            
+            setupPeerConnection();
+            socket.emit('join-room', { roomId, role: 'sender' });
+        }
+
+        // Receiver functions
+        function joinRoom() {
+            roomId = document.getElementById('roomIdInput').value;
+            document.getElementById('receiverStatus').innerHTML = `Joining room: ${roomId}`;
+            setupPeerConnection();
+            socket.emit('join-room', { roomId, role: 'receiver' });
+        }
+
+        function setupPeerConnection() {
+            peerConnection = new RTCPeerConnection({
+                iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+            });
+
+            peerConnection.onicecandidate = (event) => {
+                if (event.candidate) {
+                    const targetId = receiverId || senderId;
+                    if (targetId) {
+                        socket.emit('ice-candidate', { candidate: event.candidate, targetId });
+                    }
+                }
+            };
+
+            peerConnection.ondatachannel = (event) => {
+                dataChannel = event.channel;
+                setupDataChannel();
+            };
+        }
+
+        function setupDataChannel() {
+            dataChannel.onopen = () => {
+                console.log('Data channel opened');
+                document.getElementById('receiverStatus').innerHTML += '<br>Connected! Ready to receive file.';
+                
+                const fileInput = document.getElementById('fileInput');
+                if (fileInput.files.length > 0) {
+                    sendFile();
+                }
+            };
+
+            dataChannel.onmessage = (event) => {
+                receiveFile(event.data);
+            };
+        }
+
+        function sendFile() {
+            const file = document.getElementById('fileInput').files[0];
+            const reader = new FileReader();
+            reader.onload = () => {
+                dataChannel.send(JSON.stringify({
+                    name: file.name,
+                    size: file.size,
+                    data: reader.result
+                }));
+                document.getElementById('senderStatus').innerHTML += '<br>File sent!';
+            };
+            reader.readAsDataURL(file);
+        }
+
+        function receiveFile(data) {
+            const fileData = JSON.parse(data);
+            const blob = dataURLtoBlob(fileData.data);
+            const url = URL.createObjectURL(blob);
+            
+            document.getElementById('downloadArea').innerHTML = 
+                `<a href="${url}" download="${fileData.name}">Download ${fileData.name}</a>`;
+        }
+
+        function dataURLtoBlob(dataURL) {
+            const arr = dataURL.split(',');
+            const mime = arr[0].match(/:(.*?);/)[1];
+            const bstr = atob(arr[1]);
+            let n = bstr.length;
+            const u8arr = new Uint8Array(n);
+            while (n--) {
+                u8arr[n] = bstr.charCodeAt(n);
+            }
+            return new Blob([u8arr], { type: mime });
+        }
+
+        // WebSocket event handlers
+        socket.on('room-joined', (data) => {
+            console.log('Joined room as:', data.role);
+            if (data.role === 'receiver') {
+                document.getElementById('receiverStatus').innerHTML += '<br>Joined room successfully!';
+            }
+        });
+
+        socket.on('receiver-joined', async ({ receiverId: id }) => {
+            receiverId = id;
+            console.log('Receiver joined:', receiverId);
+            
+            // Create data channel for sender
+            dataChannel = peerConnection.createDataChannel('fileTransfer');
+            setupDataChannel();
+            
+            const offer = await peerConnection.createOffer();
+            await peerConnection.setLocalDescription(offer);
+            socket.emit('offer', { offer, targetId: receiverId });
+        });
+
+        socket.on('offer', async ({ offer, senderId: id }) => {
+            senderId = id;
+            console.log('Received offer from:', senderId);
+            await peerConnection.setRemoteDescription(offer);
+            const answer = await peerConnection.createAnswer();
+            await peerConnection.setLocalDescription(answer);
+            socket.emit('answer', { answer, targetId: senderId });
+        });
+
+        socket.on('answer', async ({ answer }) => {
+            console.log('Received answer');
+            await peerConnection.setRemoteDescription(answer);
+        });
+
+        socket.on('ice-candidate', async ({ candidate }) => {
+            console.log('Received ICE candidate');
+            await peerConnection.addIceCandidate(candidate);
+        });
+
+        socket.on('error', (error) => {
+            console.error('Socket error:', error);
+            document.getElementById('receiverStatus').innerHTML = `Error: ${error}`;
+        });
+    </script>
+</body>
+</html>

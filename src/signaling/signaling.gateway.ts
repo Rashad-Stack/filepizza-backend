@@ -8,6 +8,31 @@ import {
 import { Socket } from 'socket.io';
 import { RoomService } from '../room/room.service';
 
+interface SocketWithRoom extends Socket {
+  roomId?: string;
+  role?: 'sender' | 'receiver';
+}
+
+interface JoinRoomData {
+  roomId: string;
+  role: 'sender' | 'receiver';
+}
+
+interface OfferData {
+  offer: RTCSessionDescriptionInit;
+  targetId: string;
+}
+
+interface AnswerData {
+  answer: RTCSessionDescriptionInit;
+  targetId: string;
+}
+
+interface IceCandidateData {
+  candidate: RTCIceCandidate;
+  targetId: string;
+}
+
 @WebSocketGateway({
   cors: {
     origin: '*',
@@ -20,26 +45,26 @@ export class SignalingGateway implements OnGatewayDisconnect {
 
   @SubscribeMessage('join-room')
   async handleJoinRoom(
-    @MessageBody() data: { roomId: string; role: 'sender' | 'receiver' },
-    @ConnectedSocket() client: Socket,
+    @MessageBody() data: JoinRoomData,
+    @ConnectedSocket() client: SocketWithRoom,
   ) {
     const { roomId, role } = data;
-    
+
     const room = await this.roomService.findRoom(roomId);
     if (!room) {
       client.emit('error', 'Room not found or expired');
       return;
     }
 
-    client.join(roomId);
-    (client as any).roomId = roomId;
-    (client as any).role = role;
+    await client.join(roomId);
+    client.roomId = roomId;
+    client.role = role;
 
     if (!this.rooms.has(roomId)) {
       this.rooms.set(roomId, { receivers: [] });
     }
 
-    const roomData = this.rooms.get(roomId);
+    const roomData = this.rooms.get(roomId)!;
 
     if (role === 'sender') {
       roomData.sender = client.id;
@@ -47,16 +72,18 @@ export class SignalingGateway implements OnGatewayDisconnect {
     } else {
       roomData.receivers.push(client.id);
       client.emit('room-joined', { role: 'receiver' });
-      
+
       if (roomData.sender) {
-        client.to(roomData.sender).emit('receiver-joined', { receiverId: client.id });
+        client
+          .to(roomData.sender)
+          .emit('receiver-joined', { receiverId: client.id });
       }
     }
   }
 
   @SubscribeMessage('offer')
   handleOffer(
-    @MessageBody() data: { offer: any; targetId: string },
+    @MessageBody() data: OfferData,
     @ConnectedSocket() client: Socket,
   ) {
     client.to(data.targetId).emit('offer', {
@@ -67,7 +94,7 @@ export class SignalingGateway implements OnGatewayDisconnect {
 
   @SubscribeMessage('answer')
   handleAnswer(
-    @MessageBody() data: { answer: any; targetId: string },
+    @MessageBody() data: AnswerData,
     @ConnectedSocket() client: Socket,
   ) {
     client.to(data.targetId).emit('answer', {
@@ -78,7 +105,7 @@ export class SignalingGateway implements OnGatewayDisconnect {
 
   @SubscribeMessage('ice-candidate')
   handleIceCandidate(
-    @MessageBody() data: { candidate: any; targetId: string },
+    @MessageBody() data: IceCandidateData,
     @ConnectedSocket() client: Socket,
   ) {
     client.to(data.targetId).emit('ice-candidate', {
@@ -87,22 +114,21 @@ export class SignalingGateway implements OnGatewayDisconnect {
     });
   }
 
-  handleDisconnect(client: Socket) {
-    const clientData = client as any;
-    const { roomId, role } = clientData;
+  handleDisconnect(client: SocketWithRoom) {
+    const { roomId, role } = client;
 
     if (roomId && this.rooms.has(roomId)) {
-      const room = this.rooms.get(roomId);
-      
+      const room = this.rooms.get(roomId)!;
+
       if (role === 'sender') {
         room.sender = undefined;
       } else {
-        room.receivers = room.receivers.filter(id => id !== client.id);
+        room.receivers = room.receivers.filter((id) => id !== client.id);
       }
 
       if (!room.sender && room.receivers.length === 0) {
         this.rooms.delete(roomId);
-        this.roomService.deactivateRoom(roomId);
+        void this.roomService.deactivateRoom(roomId);
       }
     }
   }

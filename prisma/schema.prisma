@@ -4,7 +4,6 @@ generator client {
 
 datasource db {
   provider = "postgresql"
-  url      = env("DATABASE_URL")
 }
 
 model Room {
@@ -12,6 +11,6 @@ model Room {
   createdAt DateTime @default(now())
   expiresAt DateTime
   isActive  Boolean  @default(true)
-  
+
   @@map("rooms")
 }
