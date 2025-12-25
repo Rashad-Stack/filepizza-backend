@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-member-access */
 import { Controller, Get, Param, Post, Req } from '@nestjs/common';
 import type { Request } from 'express';
 import { RoomService } from './room.service';

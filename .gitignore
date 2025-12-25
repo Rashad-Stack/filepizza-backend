@@ -11,3 +11,5 @@ dist/
 coverage/
 *.tsbuildinfo
 .nyc_output/
+.vercel
+.env*.local
